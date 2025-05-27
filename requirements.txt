@@ -1,7 +1,0 @@
-torchvision==0.20.1
-numpy==2.2.6
-matplotlib==3.10.0
-diffusers==0.33.1
-pillow==11.2.1
-torch
-accelerate
