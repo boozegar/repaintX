@@ -1,21 +1,14 @@
 # !pip install diffusers
-from diffusers import DiffusionPipeline
-import PIL.Image
-import numpy as np
+from diffusers import DDPMPipeline, DDIMPipeline, PNDMPipeline
 
-model_id = "fusing/ddim-celeba-hq"
+model_id = "google/ddpm-ema-celebahq-256"
 
 # load model and scheduler
-ddpm = DiffusionPipeline.from_pretrained(model_id)
+ddpm = DDIMPipeline.from_pretrained(model_id)  # you can replace DDPMPipeline with DDIMPipeline or PNDMPipeline for faster inference
 
 # run pipeline in inference (sample random noise and denoise)
-image = ddpm(eta=0.0, num_inference_steps=50)
+image = ddpm().images[0]
 
-# process image to PIL
-image_processed = image.cpu().permute(0, 2, 3, 1)
-image_processed = (image_processed + 1.0) * 127.5
-image_processed = image_processed.numpy().astype(np.uint8)
-image_pil = PIL.Image.fromarray(image_processed[0])
 
 # save image
-image_pil.save("test.png")
+image.save("ddpm_generated_image.png")
