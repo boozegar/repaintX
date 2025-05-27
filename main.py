@@ -10,7 +10,7 @@ model_id = "google/ddpm-ema-celebahq-256"
 # load model and scheduler
 pipe = DDIMPipeline.from_pretrained(model_id, allow_pickle=False).to('cuda')  #
 scheduler = pipe.scheduler
-scheduler.set_timesteps(50)
+scheduler.set_timesteps(500)
 
 # ========== 2. 加载图像并生成遮挡区域 ==========
 transform = T.Compose([
@@ -24,7 +24,7 @@ x_0 = transform(image).unsqueeze(0).cuda()  # shape: [1, 3, 256, 256]
 # 中心遮挡
 mask = torch.ones_like(x_0)
 mask[:, :, 96:160, 96:160] = 0  # 中间64x64区域遮挡
-masked_input = x_0 * mask
+masked_input = x_0 * (1 - mask)
 
 # 起始噪声图像
 x = torch.randn_like(x_0)
