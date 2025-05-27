@@ -1,4 +1,4 @@
-from diffusers import DDIMPipeline
+from diffusers import DDPMPipeline
 from PIL import Image
 import torch
 import torchvision.transforms as T
@@ -8,9 +8,9 @@ import os
 # ========== 1. 加载预训练 DDIMPipeline ==========
 model_id = "google/ddpm-ema-celebahq-256"
 # load model and scheduler
-pipe = DDIMPipeline.from_pretrained(model_id, allow_pickle=False).to('cuda')  #
+pipe = DDPMPipeline.from_pretrained(model_id, allow_pickle=False).to('cuda')  #
 scheduler = pipe.scheduler
-scheduler.set_timesteps(500)
+scheduler.set_timesteps(100)
 
 # ========== 2. 加载图像并生成遮挡区域 ==========
 transform = T.Compose([
