@@ -1,4 +1,4 @@
-from diffusers import DDPMPipeline
+from diffusers import DDPMPipeline,DDIMPipeline
 from PIL import Image
 import torch
 import torchvision.transforms as T
@@ -6,12 +6,12 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import os
 
-# ========== 1. 加载预训练 DDIMPipeline ==========
+# ========== 1. 加载预训练 DDPMPipeline ==========
 model_id = "google/ddpm-ema-celebahq-256"
 # load model and scheduler
 pipe = DDPMPipeline.from_pretrained(model_id, allow_pickle=False).to('cuda')  #
 scheduler = pipe.scheduler
-scheduler.set_timesteps(300)
+scheduler.set_timesteps(500)
 
 # ========== 2. 加载图像并生成遮挡区域 ==========
 transform = T.Compose([
@@ -19,7 +19,7 @@ transform = T.Compose([
     T.ToTensor(),
 ])
 
-image = Image.open("face_001.png").convert("RGB")
+image = Image.open("ddpm_generated_image.png").convert("RGB")
 x_0 = transform(image).unsqueeze(0).cuda()  # shape: [1, 3, 256, 256]
 
 # 中心遮挡
@@ -31,23 +31,14 @@ masked_input = x_0 * mask
 # 起始噪声图像
 x = torch.randn_like(x_0)
 
-# 显示掩码图像
-masked_image = masked_input.squeeze().permute(1, 2, 0).clamp(0, 1).cpu().numpy()
-plt.imshow(masked_image)
-plt.title("Masked Input")
-plt.axis("off")
-plt.show()
+
 
 # ========== 3. RePaint 推理参数 ==========
-jump_every = 10
-jump_n = 1
-max_jumps = 5
-jump_counter = 0
+jump_every = 1
+jump_n = 10
 
-# 可视化准备
-os.makedirs("inference_steps", exist_ok=True)
-step_images = []
-save_interval = 10
+
+
 
 # ========== 4. 使用 pipeline 的模型手动跳步生成 ==========
 for i, t in enumerate(scheduler.timesteps):
@@ -58,6 +49,20 @@ for i, t in enumerate(scheduler.timesteps):
 
     # 修复：掩码区域用预测值，未遮挡区域保持原图
     x = x_prev * mask + x_0 * (1 - mask)
+
+    # 跳步
+    # === RePaint 跳步逻辑 ===
+    if (i > 0) and (i % jump_every == 0) :
+        back_i = max(0, i - jump_n)
+        t_back = scheduler.timesteps[back_i]
+
+        with torch.no_grad():
+            noise_pred = pipe.unet(x, t_back).sample
+            x_forward = scheduler.step(noise_pred, t_back, x).prev_sample
+
+        with torch.no_grad():
+            noise_pred = pipe.unet(x_forward, t).sample
+            x = scheduler.step(noise_pred, t, x_forward).prev_sample
 
 
 x_image = x.squeeze().permute(1, 2, 0).clamp(0, 1).cpu().numpy()
