@@ -6,8 +6,9 @@ import matplotlib.pyplot as plt
 import os
 
 # ========== 1. 加载预训练 DDIMPipeline ==========
-pipe = DDIMPipeline.from_pretrained("google/ddpm-celebahq-256",
-                                    allow_pickle=False).to("cuda")
+model_id = "google/ddpm-ema-celebahq-256"
+# load model and scheduler
+pipe = DDIMPipeline.from_pretrained(model_id, allow_pickle=False).to('cuda')  #
 scheduler = pipe.scheduler
 scheduler.set_timesteps(50)
 

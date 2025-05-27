@@ -4,11 +4,13 @@ from diffusers import DDPMPipeline, DDIMPipeline, PNDMPipeline
 model_id = "google/ddpm-ema-celebahq-256"
 
 # load model and scheduler
-ddpm = DDIMPipeline.from_pretrained(model_id)  # you can replace DDPMPipeline with DDIMPipeline or PNDMPipeline for faster inference
+ddpm = DDIMPipeline.from_pretrained(model_id, allow_pickle=False).to('cuda')  #
+# you can
+# replace
+# DDPMPipeline with DDIMPipeline or PNDMPipeline for faster inference
 
 # run pipeline in inference (sample random noise and denoise)
 image = ddpm().images[0]
-
 
 # save image
 image.save("ddpm_generated_image.png")
