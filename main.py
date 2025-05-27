@@ -57,26 +57,9 @@ for i, t in enumerate(scheduler.timesteps):
     # 修复：掩码区域用预测值，未遮挡区域保持原图
     x = x_prev * mask + x_0 * (1 - mask)
 
-    # === RePaint 跳步逻辑 ===
-    if (i > 0) and (i % jump_every == 0) and (jump_counter < max_jumps):
-        jump_counter += 1
-        back_i = max(0, i - jump_n)
-        t_back = scheduler.timesteps[back_i]
 
-        with torch.no_grad():
-            noise_pred = pipe.unet(x, t_back).sample
-            x_forward = scheduler.step(noise_pred, t_back, x).prev_sample
 
-        with torch.no_grad():
-            noise_pred = pipe.unet(x_forward, t).sample
-            x = scheduler.step(noise_pred, t, x_forward).prev_sample
 
-        x = x * mask + x_0 * (1 - mask)
-
-    # 可视化保存
-    if i % save_interval == 0 or i == scheduler.num_inference_steps - 1:
-        vis = x.clamp(0, 1).squeeze(0).permute(1, 2, 0).cpu().numpy()
-        step_images.append(vis)
 
 # ========== 5. 显示最终修复结果 ==========
 recon = x.clamp(0, 1).squeeze(0).permute(1, 2, 0).cpu().numpy()
