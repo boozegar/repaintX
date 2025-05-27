@@ -2,12 +2,12 @@ from diffusers import DDIMPipeline
 from PIL import Image
 import torch
 import torchvision.transforms as T
-import numpy as np
 import matplotlib.pyplot as plt
 import os
 
 # ========== 1. 加载预训练 DDIMPipeline ==========
-pipe = DDIMPipeline.from_pretrained("google/ddpm-celebahq-256").to("cuda")
+pipe = DDIMPipeline.from_pretrained("google/ddpm-celebahq-256",
+                                    allow_pickle=False).to("cuda")
 scheduler = pipe.scheduler
 scheduler.set_timesteps(50)
 
