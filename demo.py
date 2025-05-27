@@ -1,16 +1,13 @@
-# !pip install diffusers
-from diffusers import DDPMPipeline, DDIMPipeline, PNDMPipeline
+from diffusers import DDIMPipeline
+import torch
 
 model_id = "google/ddpm-ema-celebahq-256"
 
-# load model and scheduler
-ddpm = DDIMPipeline.from_pretrained(model_id, allow_pickle=False).to('cuda')  #
-# you can
-# replace
-# DDPMPipeline with DDIMPipeline or PNDMPipeline for faster inference
+# 加载模型
+ddpm = DDIMPipeline.from_pretrained(model_id).to('cuda')
 
-# run pipeline in inference (sample random noise and denoise)
-image = ddpm().images[0]
+# 设置采样步数为 1000
+image = ddpm(num_inference_steps=500).images[0]
 
-# save image
+# 保存图像
 image.save("ddpm_generated_image.png")
