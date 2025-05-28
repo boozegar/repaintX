@@ -22,14 +22,11 @@ transform = transforms.Compose([
     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
 
-# 使用清华大学镜像源下载CelebA数据集
 dataset = datasets.CelebA(
     root='./data',
     split='train',
-    download=True,
+    download=False,
     transform=transform,
-    # 使用清华大学镜像源
-    mirror="https://mirrors.tuna.tsinghua.edu.cn/image-net/"
 )
 dataloader = DataLoader(dataset, batch_size=32, shuffle=True, num_workers=4)
 
