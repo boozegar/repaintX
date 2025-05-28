@@ -1,4 +1,4 @@
-from diffusers import DDPMPipeline,DDIMPipeline
+from diffusers import DDPMPipeline, DDIMPipeline, PNDMPipeline
 from PIL import Image
 import torch
 import torchvision.transforms as T
@@ -9,7 +9,7 @@ import os
 # ========== 1. 加载预训练 DDPMPipeline ==========
 model_id = "google/ddpm-ema-celebahq-256"
 # load model and scheduler
-pipe = DDPMPipeline.from_pretrained(model_id, allow_pickle=False).to('cuda')  #
+pipe = PNDMPipeline.from_pretrained(model_id, allow_pickle=False).to('cuda')  #
 scheduler = pipe.scheduler
 scheduler.set_timesteps(500)
 
