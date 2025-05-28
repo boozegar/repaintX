@@ -1,6 +1,6 @@
 from diffusers import DiTPipeline, DPMSolverMultistepScheduler
 import torch
-
+import matplotlib.pyplot as plt
 pipe = DiTPipeline.from_pretrained("facebook/DiT-XL-2-256",
                                    torch_dtype=torch.float16)
 pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
@@ -19,3 +19,4 @@ output = pipe(class_labels=class_ids, num_inference_steps=25,
               generator=generator)
 
 image = output.images[0]  # label 'white shark'
+plt.imshow(image)
