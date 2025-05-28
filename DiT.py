@@ -23,10 +23,9 @@ transform = transforms.Compose([
 ])
 
 dataset = datasets.CelebA(
-    root='./data/raw',
+    root='./data',
     split='train',
-    download=False,
-
+    download=True,
     transform=transform,
 )
 dataloader = DataLoader(dataset, batch_size=32, shuffle=True, num_workers=4)
