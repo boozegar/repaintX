@@ -99,7 +99,7 @@ config = {
     "num_train_timesteps": 1000,
     "beta_schedule": "cosine",
     "num_epochs": 100,  # Example
-    "dataset_path": "path/to/celeba_hq/images",  # IMPORTANT: Update this path
+    "dataset_path": "~/SHB/celeba_hq/images",  # IMPORTANT: Update this path
     "output_dir": "./diffusion_inpainting_celeba_hq",
     "mixed_precision": "fp16",  # or "bf16" or "no"
     "gradient_accumulation_steps": 1,
