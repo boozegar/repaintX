@@ -1,205 +1,225 @@
-import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
 from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
-from torchvision.utils import save_image
-import torchvision.models as models
-from tqdm import tqdm
-import lpips
-
-# 设置随机种子确保可复现性
-torch.manual_seed(42)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# 数据预处理
-transform = transforms.Compose([
-    transforms.Resize((256, 256)),
-    transforms.CenterCrop(256),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-])
-
-dataset = datasets.CelebA(
-    root='./data',
-    split='train',
-    download=True,
-    transform=transform,
-)
-dataloader = DataLoader(dataset, batch_size=32, shuffle=True, num_workers=4)
-
-# 后续代码保持不变...
+from tqdm.auto import tqdm
+import numpy as np
+from einops import rearrange, repeat
 
 
-# DiT模型实现
-class AttentionBlock(nn.Module):
-    def __init__(self, channels):
+# 基础模块：LayerNorm和残差连接
+class LayerNorm(nn.Module):
+    def __init__(self, dim):
         super().__init__()
-        self.group_norm = nn.GroupNorm(32, channels)
-        self.attention = nn.MultiheadAttention(channels, 8, batch_first=True)
+        self.gamma = nn.Parameter(torch.ones(dim))
+        self.beta = nn.Parameter(torch.zeros(dim))
 
     def forward(self, x):
-        b, c, h, w = x.shape
-        x = self.group_norm(x)
-        x = x.view(b, c, h * w).transpose(1, 2)
-        attn_output, _ = self.attention(x, x, x)
-        x = attn_output.transpose(1, 2).view(b, c, h, w)
+        return F.layer_norm(x, x.shape[-1:], self.gamma, self.beta)
+
+
+class Residual(nn.Module):
+    def __init__(self, fn):
+        super().__init__()
+        self.fn = fn
+
+    def forward(self, x, **kwargs):
+        return self.fn(x, **kwargs) + x
+
+
+# 时间嵌入模块
+class TimestepEmbedding(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+        half_dim = dim // 2
+        self.emb = nn.Embedding(1000, half_dim)
+        self.proj = nn.Linear(half_dim, dim)
+
+    def forward(self, t):
+        t = self.emb(t)
+        t = F.silu(t)
+        t = self.proj(t)
+        return t
+
+
+# Transformer模块
+class Attention(nn.Module):
+    def __init__(self, dim, heads=8, dim_head=64):
+        super().__init__()
+        inner_dim = dim_head * heads
+        project_out = not (heads == 1 and dim_head == dim)
+
+        self.heads = heads
+        self.scale = dim_head ** -0.5
+
+        self.to_qkv = nn.Linear(dim, inner_dim * 3)
+        self.to_out = nn.Sequential(nn.Linear(inner_dim, dim), LayerNorm(
+            dim)) if project_out else nn.Identity()
+
+    def forward(self, x):
+        b, n, _, h = *x.shape, self.heads
+        qkv = self.to_qkv(x).chunk(3, dim=-1)
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=h), qkv)
+
+        dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+        attn = dots.softmax(dim=-1)
+        out = torch.matmul(attn, v)
+        out = rearrange(out, 'b h n d -> b n (h d)')
+        return self.to_out(out)
+
+
+class TransformerBlock(nn.Module):
+    def __init__(self, dim, heads=8, dim_head=64, mlp_ratio=4.0):
+        super().__init__()
+        self.norm1 = LayerNorm(dim)
+        self.attn = Attention(dim, heads=heads, dim_head=dim_head)
+        self.norm2 = LayerNorm(dim)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, mlp_hidden_dim),
+            nn.GELU(),
+            nn.Linear(mlp_hidden_dim, dim)
+        )
+
+    def forward(self, x):
+        x = x + self.attn(self.norm1(x))
+        x = x + self.mlp(self.norm2(x))
         return x
 
 
-class ResidualBlock(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
-                               padding=1)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
-                               padding=1)
-        self.norm1 = nn.GroupNorm(32, in_channels)
-        self.norm2 = nn.GroupNorm(32, out_channels)
-        self.activation = nn.SiLU()
-
-        if in_channels != out_channels:
-            self.shortcut = nn.Conv2d(in_channels, out_channels, kernel_size=1)
-        else:
-            self.shortcut = nn.Identity()
-
-    def forward(self, x):
-        residual = self.shortcut(x)
-        x = self.norm1(x)
-        x = self.activation(x)
-        x = self.conv1(x)
-        x = self.norm2(x)
-        x = self.activation(x)
-        x = self.conv2(x)
-        return x + residual
-
-
+# DiT模型主体
 class DiT(nn.Module):
-    def __init__(self, image_size=256, in_channels=3, hidden_channels=256,
-                 num_blocks=4):
+    def __init__(self, image_size=256, in_channels=3, dim=512, depth=6, heads=8,
+                 dim_head=64):
         super().__init__()
         self.image_size = image_size
+        self.patch_size = 16
+        self.patch_dim = in_channels * (patch_size ** 2)
+        self.num_patches = (image_size // patch_size) ** 2
 
-        # 编码器
-        self.encoder = nn.Sequential(
-            nn.Conv2d(in_channels, hidden_channels, kernel_size=3, padding=1),
-            *[ResidualBlock(hidden_channels, hidden_channels) for _ in
-              range(num_blocks)],
-            AttentionBlock(hidden_channels),
-            *[ResidualBlock(hidden_channels, hidden_channels) for _ in
-              range(num_blocks)],
-            nn.Conv2d(hidden_channels, hidden_channels * 2, kernel_size=3,
-                      stride=2, padding=1),
-            *[ResidualBlock(hidden_channels * 2, hidden_channels * 2) for _ in
-              range(num_blocks)],
-            AttentionBlock(hidden_channels * 2),
-            *[ResidualBlock(hidden_channels * 2, hidden_channels * 2) for _ in
-              range(num_blocks)],
-            nn.Conv2d(hidden_channels * 2, hidden_channels * 4, kernel_size=3,
-                      stride=2, padding=1),
-            *[ResidualBlock(hidden_channels * 4, hidden_channels * 4) for _ in
-              range(num_blocks)],
-            AttentionBlock(hidden_channels * 4),
-            *[ResidualBlock(hidden_channels * 4, hidden_channels * 4) for _ in
-              range(num_blocks)]
-        )
+        # 图像到补丁的映射
+        self.patch_proj = nn.Linear(self.patch_dim, dim)
 
-        # 瓶颈层
-        self.bottleneck = nn.Sequential(
-            ResidualBlock(hidden_channels * 4, hidden_channels * 4),
-            AttentionBlock(hidden_channels * 4),
-            ResidualBlock(hidden_channels * 4, hidden_channels * 4)
-        )
+        # 位置嵌入
+        self.pos_emb = nn.Parameter(torch.randn(1, self.num_patches + 1, dim))
+        self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
 
-        # 解码器
-        self.decoder = nn.Sequential(
-            *[ResidualBlock(hidden_channels * 4, hidden_channels * 4) for _ in
-              range(num_blocks)],
-            AttentionBlock(hidden_channels * 4),
-            *[ResidualBlock(hidden_channels * 4, hidden_channels * 4) for _ in
-              range(num_blocks)],
-            nn.ConvTranspose2d(hidden_channels * 4, hidden_channels * 2,
-                               kernel_size=4, stride=2, padding=1),
-            *[ResidualBlock(hidden_channels * 2, hidden_channels * 2) for _ in
-              range(num_blocks)],
-            AttentionBlock(hidden_channels * 2),
-            *[ResidualBlock(hidden_channels * 2, hidden_channels * 2) for _ in
-              range(num_blocks)],
-            nn.ConvTranspose2d(hidden_channels * 2, hidden_channels,
-                               kernel_size=4, stride=2, padding=1),
-            *[ResidualBlock(hidden_channels, hidden_channels) for _ in
-              range(num_blocks)],
-            AttentionBlock(hidden_channels),
-            *[ResidualBlock(hidden_channels, hidden_channels) for _ in
-              range(num_blocks)],
-            nn.Conv2d(hidden_channels, in_channels, kernel_size=3, padding=1),
-            nn.Tanh()
-        )
+        # 时间嵌入
+        self.time_emb = TimestepEmbedding(dim)
 
-    def forward(self, x):
-        x = self.encoder(x)
-        x = self.bottleneck(x)
-        x = self.decoder(x)
+        # Transformer块
+        self.transformer_blocks = nn.ModuleList([
+            TransformerBlock(dim, heads=heads, dim_head=dim_head)
+            for _ in range(depth)
+        ])
+
+        # 输出层
+        self.to_out = nn.Linear(dim, self.patch_dim)
+
+    def forward(self, x, t):
+        b, c, h, w = x.shape
+        assert h == w == self.image_size, f"图像尺寸应为{self.image_size}x{self.image_size}"
+
+        # 补丁化
+        x = rearrange(x, 'b c (h p1) (w p2) -> b (h w) (c p1 p2)',
+                      p1=self.patch_size, p2=self.patch_size)
+        x = self.patch_proj(x)
+
+        # 添加类令牌
+        cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b=b)
+        x = torch.cat((cls_tokens, x), dim=1)
+
+        # 添加位置嵌入
+        x = x + self.pos_emb
+
+        # 添加时间嵌入
+        t_emb = self.time_emb(t)
+        t_emb = rearrange(t_emb, 'b d -> b 1 d')
+        x = x + t_emb
+
+        # 通过Transformer块
+        for block in self.transformer_blocks:
+            x = block(x)
+
+        # 提取补丁表示（不包括类令牌）
+        x = x[:, 1:, :]
+
+        # 映射回补丁空间
+        x = self.to_out(x)
+
+        # 重塑回图像形状
+        x = rearrange(x, 'b (h w) (c p1 p2) -> b c (h p1) (w p2)',
+                      h=self.image_size // self.patch_size,
+                      w=self.image_size // self.patch_size,
+                      p1=self.patch_size, p2=self.patch_size, c=c)
+
         return x
 
 
-# 初始化模型、优化器和损失函数
-model = DiT().to(device)
-optimizer = optim.Adam(model.parameters(), lr=1e-4)
-criterion = nn.MSELoss()
-lpips_loss = lpips.LPIPS(net='vgg').to(device)
+# 扩散过程
+class Diffusion:
+    def __init__(self, timesteps=1000):
+        self.timesteps = timesteps
+        self.betas = torch.linspace(1e-4, 0.02, timesteps)
+        self.alphas = 1. - self.betas
+        self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
+        self.alphas_cumprod_prev = F.pad(self.alphas_cumprod[:-1], (1, 0),
+                                         value=1.0)
 
-# 创建保存目录
-os.makedirs('generated_images', exist_ok=True)
-os.makedirs('checkpoints', exist_ok=True)
+    def q_sample(self, x_start, t, noise=None):
+        if noise is None:
+            noise = torch.randn_like(x_start)
+        return (self.alphas_cumprod[t][:, None, None, None] ** 0.5) * x_start + \
+            (1 - self.alphas_cumprod[t][:, None, None, None]) ** 0.5 * noise
+
+    def get_loss(self, model, x_start, t):
+        noise = torch.randn_like(x_start)
+        x_noisy = self.q_sample(x_start, t, noise)
+        x_pred = model(x_noisy, t)
+        loss = F.mse_loss(x_pred, noise, reduction='none').mean()
+        return loss
 
 
 # 训练函数
-def train(epoch):
+def train_dit(model, diffusion, train_loader, optimizer, epochs=100,
+              device="cuda"):
+    model.to(device)
     model.train()
-    train_loss = 0
-    lpips_score = 0
-    progress_bar = tqdm(enumerate(dataloader), total=len(dataloader))
 
-    for batch_idx, (data, _) in progress_bar:
-        data = data.to(device)
-        optimizer.zero_grad()
-        recon_batch = model(data)
+    for epoch in range(epochs):
+        epoch_loss = 0.0
+        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs}")
 
-        # 计算损失
-        mse_loss = criterion(recon_batch, data)
-        perceptual_loss = lpips_loss(recon_batch, data).mean()
-        loss = mse_loss + 0.1 * perceptual_loss
+        for batch in progress_bar:
+            batch = batch.to(device)
+            optimizer.zero_grad()
 
-        loss.backward()
-        train_loss += loss.item()
-        lpips_score += perceptual_loss.item()
-        optimizer.step()
+            # 随机时间步
+            t = torch.randint(0, diffusion.timesteps, (batch.shape[0],),
+                              device=device).long()
 
-        progress_bar.set_description(
-            f'Epoch: {epoch} [{batch_idx * len(data)}/{len(dataloader.dataset)} '
-            f'({100. * batch_idx / len(dataloader):.0f}%)]')
-        progress_bar.set_postfix(loss=loss.item() / len(data),
-                                 lpips=perceptual_loss.item() / len(data))
+            # 计算损失
+            loss = diffusion.get_loss(model, batch, t)
+            loss.backward()
+            optimizer.step()
 
-    print(
-        f'====> Epoch: {epoch} Average loss: {train_loss / len(dataloader):.4f}, '
-        f'Average LPIPS: {lpips_score / len(dataloader):.4f}')
+            epoch_loss += loss.item()
+            progress_bar.set_postfix(loss=loss.item())
 
-    # 保存生成的图像和模型检查点
-    with torch.no_grad():
-        sample = data[:8].to(device)
-        recon_sample = model(sample)
-        comparison = torch.cat([sample, recon_sample])
-        save_image(comparison.cpu(),
-                   f'generated_images/reconstruction_{epoch}.png', nrow=8)
+        avg_loss = epoch_loss / len(train_loader)
+        print(f"Epoch {epoch + 1}/{epochs}, Average Loss: {avg_loss:.4f}")
 
-    torch.save(model.state_dict(), f'checkpoints/dit_model_epoch_{epoch}.pth')
+        # 定期保存模型
+        if (epoch + 1) % 10 == 0:
+            torch.save(model.state_dict(), f"dit_model_epoch_{epoch + 1}.pt")
 
 
-# 训练模型
-num_epochs = 50
-for epoch in range(1, num_epochs + 1):
-    train(epoch)    
+# 初始化模型、扩散过程和优化器
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = DiT(image_size=256, in_channels=3, dim=512, depth=6)
+diffusion = Diffusion(timesteps=1000)
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+
+# 开始训练
+train_dit(model, diffusion, train_loader, optimizer, epochs=50)
